@@ -11,50 +11,41 @@ from ..utils.config import config
 console = Console()
 
 
-async def get_vm_services(ip: str):
+async def get_vm_processes(ip: str):
     executor = SSHExecutor(ip)
-    # This command gets listening ports, PIDs, and the full command line.
-    # We use sed to extract the pid safely from the ss output.
+    # This command gets ALL processes, their PIDs, command lines, and CWDs.
+    # We filter for anything related to /root/chaos/
     cmd = """
-    ss -tulpnH | awk '{print $5, $7}' | while read addr users; do
-        pid=$(echo $users | sed -n 's/.*pid=\\([0-9]*\\),.*/\\1/p' | head -n 1)
-        if [ -z "$pid" ]; then
-            # Try without the trailing comma in case it's at the end
-            pid=$(echo $users | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p' | head -n 1)
+    ps -eo pid,args --no-headers | while read pid args; do
+        cwd=$(readlink -f /proc/$pid/cwd 2>/dev/null || echo "unknown")
+        if [[ "$args" == *"/root/chaos/"* ]] || [[ "$cwd" == *"/root/chaos/"* ]]; then
+            # Check if it's listening on a port
+            port=$(ss -tulpn | grep "pid=$pid," | awk '{print $5}' | sed 's/.*://' | head -n 1)
+            [ -z "$port" ] && port="N/A"
+            echo "$pid|$port|$args|$cwd"
         fi
-        if [ ! -z "$pid" ]; then
-            command_line=$(ps -p $pid -o args=)
-            echo "$pid|$addr|$command_line"
-        fi
-    done | sort -u
+    done
     """
     try:
-        # Using a timeout or ensuring it doesn't hang
         status, stdout, stderr = await asyncio.to_thread(executor.execute, cmd)
         if status != 0:
             return []
 
-        services = []
+        processes = []
         for line in stdout.strip().split("\n"):
             if not line:
                 continue
             parts = line.split("|")
-            if len(parts) >= 3:
-                pid = parts[0]
-                addr = parts[1]
-                full_cmd = parts[2]
-
-                # Split addr into IP and Port
-                # Handle IPv6 [::]:80
-                if ":" in addr:
-                    ip_part, port = addr.rsplit(":", 1)
-                else:
-                    ip_part, port = addr, "???"
-
-                services.append(
-                    {"pid": pid, "ip": ip_part, "port": port, "command": full_cmd}
+            if len(parts) >= 4:
+                processes.append(
+                    {
+                        "pid": parts[0],
+                        "port": parts[1],
+                        "command": parts[2],
+                        "cwd": parts[3],
+                    }
                 )
-        return services
+        return processes
     except Exception as e:
         return []
     finally:
@@ -67,15 +58,11 @@ async def run_service_monitor():
 
     with Live(auto_refresh=False) as live:
         while True:
-            # Get registered services for cross-referencing descriptions
             registered = await agora.get_services()
-            # Map (ip, port) -> service_info
-            reg_map = {
-                (s.vm_ip, str(s.service_name).split(":")[-1]): s for s in registered
-            }
+            reg_map = {s.agent_id: s for s in registered}
 
             table = Table(
-                title="[bold green]Agent Chaos - Managed Services (/root/chaos/)[/bold green]",
+                title="[bold green]Agent Chaos - Active Process Monitor (/root/chaos/)[/bold green]",
                 show_header=True,
                 header_style="bold cyan",
                 expand=True,
@@ -83,33 +70,34 @@ async def run_service_monitor():
             table.add_column("VM Host", style="magenta")
             table.add_column("PID", style="yellow")
             table.add_column("Port", style="bold green")
-            table.add_column("Agent / Owner", style="cyan")
+            table.add_column("Owner", style="cyan")
             table.add_column("Command / Binary", overflow="fold")
-            table.add_column("Description", style="dim")
+            table.add_column("CWD", style="dim", overflow="fold")
 
-            # Fetch from all VMs in parallel
-            tasks = [get_vm_services(ip) for ip in config.VM_IPS]
+            tasks = [get_vm_processes(ip) for ip in config.VM_IPS]
             results = await asyncio.gather(*tasks)
 
             found_any = False
-            for ip, vm_services in zip(config.VM_IPS, results):
-                for svc in vm_services:
-                    # ONLY show processes running from /root/chaos/
-                    if "/root/chaos/" in svc["command"]:
-                        found_any = True
+            for ip, vm_procs in zip(config.VM_IPS, results):
+                for proc in vm_procs:
+                    found_any = True
 
-                        # Try to find agent registration
-                        reg_info = reg_map.get((ip, svc["port"]))
-                        owner = reg_info.agent_id if reg_info else "[dim]Unknown[/dim]"
-                        desc = (
-                            reg_info.description
-                            if reg_info
-                            else "[dim]Unregistered[/dim]"
-                        )
+                    # Try to determine owner from CWD or command
+                    owner = "[dim]Unknown[/dim]"
+                    for agent_dir in os.listdir("data/logs"):
+                        agent_name = f"chaos-{agent_dir.split('.')[0]}"
+                        if agent_name in proc["cwd"] or agent_name in proc["command"]:
+                            owner = agent_name
+                            break
 
-                        table.add_row(
-                            ip, svc["pid"], svc["port"], owner, svc["command"], desc
-                        )
+                    table.add_row(
+                        ip,
+                        proc["pid"],
+                        proc["port"],
+                        owner,
+                        proc["command"],
+                        proc["cwd"],
+                    )
 
             if not found_any:
                 table.add_row(
