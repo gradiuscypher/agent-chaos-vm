@@ -63,6 +63,7 @@ async def run_interrogator():
             "[Logs]",
             "[Profiles]",
             "[Stop All]",
+            "[Stop Agent]",
             "[Exit]",
         ] + active_agents
         choice = Prompt.ask("Target", choices=options, default="all")
@@ -72,6 +73,11 @@ async def run_interrogator():
         elif choice == "[Stop All]":
             await agora.post("system", "STOP", "command")
             console.print("[bold red]Stop signal sent to all agents.[/bold red]")
+            continue
+        elif choice == "[Stop Agent]":
+            agent_to_stop = Prompt.ask("Which agent?", choices=active_agents)
+            await agora.post(agent_to_stop, "STOP", "command")
+            console.print(f"[bold red]Stop signal sent to {agent_to_stop}.[/bold red]")
             continue
         elif choice == "[Logs]":
             log_files = [f for f in os.listdir("data/logs") if f.endswith(".json")]
