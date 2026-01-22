@@ -1,0 +1,13 @@
+# Environments
+.env
+.venv
+__pycache__/
+*.py[cod]
+
+# Data
+data/logs/
+data/state/
+*.sqlite
+
+# System
+.DS_Store
