@@ -60,13 +60,13 @@ class Agora:
             """)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS services (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     service_name TEXT,
                     vm_ip TEXT,
                     agent_id TEXT,
                     start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
                     description TEXT,
-                    status TEXT
+                    status TEXT,
+                    PRIMARY KEY (service_name, vm_ip)
                 )
             """)
             await db.execute("""
@@ -121,7 +121,10 @@ class Agora:
     async def register_service(self, service: ServiceInfo):
         async with self._get_db() as db:
             await db.execute(
-                "INSERT INTO services (service_name, vm_ip, agent_id, description, status) VALUES (?, ?, ?, ?, ?)",
+                """
+                INSERT OR REPLACE INTO services (service_name, vm_ip, agent_id, description, status)
+                VALUES (?, ?, ?, ?, ?)
+                """,
                 (
                     service.service_name,
                     service.vm_ip,
@@ -136,18 +139,17 @@ class Agora:
         services = []
         async with self._get_db() as db:
             async with db.execute(
-                "SELECT id, service_name, vm_ip, agent_id, start_time, description, status FROM services"
+                "SELECT service_name, vm_ip, agent_id, start_time, description, status FROM services"
             ) as cursor:
                 async for row in cursor:
                     services.append(
                         ServiceInfo(
-                            id=row[0],
-                            service_name=row[1],
-                            vm_ip=row[2],
-                            agent_id=row[3],
-                            start_time=row[4],
-                            description=row[5],
-                            status=row[6],
+                            service_name=row[0],
+                            vm_ip=row[1],
+                            agent_id=row[2],
+                            start_time=row[3],
+                            description=row[4],
+                            status=row[5],
                         )
                     )
         return services

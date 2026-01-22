@@ -11,14 +11,18 @@ console = Console()
 
 
 async def listen_for_responses(agora: Agora, show_internal: bool = False):
+    # Track the last ID we've displayed to the user
     last_processed_id = 0
+
+    # Initialize pointer to current latest message in the whole system
+    # so we don't print the entire history on startup
     recent = await agora.get_recent(limit=1)
     if recent and recent[0].id is not None:
         last_processed_id = recent[0].id
 
     while True:
-        await asyncio.sleep(2)
-        # Fetch NEW messages
+        await asyncio.sleep(1)
+        # Fetch ALL new messages after our last processed ID
         messages = await agora.get_recent(limit=50, after_id=last_processed_id)
 
         for msg in messages:
@@ -43,14 +47,18 @@ async def run_interrogator():
 
     console.print("[bold red]Agent Chaos - Master Interrogation & Control[/bold red]")
 
-    show_internal = (
-        Prompt.ask(
-            "Show internal thoughts/feelings in real-time?",
-            choices=["y", "n"],
-            default="n",
-        )
-        == "y"
+    # Use a thread-safe way to get input without blocking the event loop
+    def sync_prompt(msg, choices=None, default=None):
+        return Prompt.ask(msg, choices=choices, default=default)
+
+    show_internal_raw = await asyncio.to_thread(
+        sync_prompt,
+        "Show internal thoughts/feelings in real-time?",
+        choices=["y", "n"],
+        default="n",
     )
+    show_internal = show_internal_raw == "y"
+
     asyncio.create_task(listen_for_responses(agora, show_internal))
 
     while True:
@@ -66,7 +74,9 @@ async def run_interrogator():
             "[Stop Agent]",
             "[Exit]",
         ] + active_agents
-        choice = Prompt.ask("Target", choices=options, default="all")
+        choice = await asyncio.to_thread(
+            sync_prompt, "Target", choices=options, default="all"
+        )
 
         if choice == "[Exit]":
             break
@@ -75,23 +85,32 @@ async def run_interrogator():
             console.print("[bold red]Stop signal sent to all agents.[/bold red]")
             continue
         elif choice == "[Stop Agent]":
-            agent_to_stop = Prompt.ask("Which agent?", choices=active_agents)
-            await agora.post(agent_to_stop, "STOP", "command")
-            console.print(f"[bold red]Stop signal sent to {agent_to_stop}.[/bold red]")
+            agent_to_stop = await asyncio.to_thread(
+                sync_prompt, "Which agent?", choices=active_agents
+            )
+            if agent_to_stop:
+                await agora.post(str(agent_to_stop), "STOP", "command")
+                console.print(
+                    f"[bold red]Stop signal sent to {agent_to_stop}.[/bold red]"
+                )
             continue
         elif choice == "[Logs]":
-            log_files = [f for f in os.listdir("data/logs") if f.endswith(".json")]
+            log_files = sorted(
+                [f for f in os.listdir("data/logs") if f.endswith(".json")]
+            )
             if not log_files:
                 console.print("No logs found.")
                 continue
-            log_choice = Prompt.ask("Which user log?", choices=log_files)
-            with open(f"data/logs/{log_choice}", "r") as f:
-                data = json.load(f)
-                console.print(Syntax(json.dumps(data[:10], indent=2), "json"))
-                console.print(f"... showing first 10 of {len(data)} messages.")
+            log_choice = await asyncio.to_thread(
+                sync_prompt, "Which user log?", choices=log_files
+            )
+            if log_choice:
+                with open(f"data/logs/{log_choice}", "r") as f:
+                    data = json.load(f)
+                    console.print(Syntax(json.dumps(data[:10], indent=2), "json"))
+                    console.print(f"... showing first 10 of {len(data)} messages.")
             continue
         elif choice == "[Profiles]":
-            # We'll just ask the agents to share their profiles
             await agora.post(
                 "all",
                 "Please state your full personality profile and current objectives.",
@@ -100,15 +119,16 @@ async def run_interrogator():
             console.print("[cyan]Requested profiles from all agents.[/cyan]")
             continue
 
-        question = Prompt.ask(f"Message for [bold cyan]{choice}[/bold cyan]")
+        question = await asyncio.to_thread(
+            sync_prompt, f"Message for [bold cyan]{choice}[/bold cyan]"
+        )
 
         if question:
-            # If 'all' is selected, we post a separate query for each agent to ensure individual responses
             if choice == "all":
                 for agent in active_agents:
                     await agora.post(agent, question, "user_query")
             else:
-                await agora.post(choice, question, "user_query")
+                await agora.post(str(choice), question, "user_query")
 
             console.print(f"[green]Query sent. Waiting for response...[/green]")
             console.print("-" * 20)
