@@ -22,10 +22,16 @@ class Personality:
         sample = "\n".join([msg["content"] for msg in logs[:200]])
 
         prompt = f"""
-        Analyze the following chat logs from a Discord user and create a detailed personality profile for an AI agent. 
-        The agent should mimic the user's vocabulary, tone, temperament, and interests.
+        Analyze the following chat logs from a Discord user and create an extremely detailed, high-fidelity personality profile for an AI agent. 
+        The agent should PERFECTLY mimic the user's vocabulary, tone, temperament, and interests.
         Identify any specific technical skills, hobbies, or recurring obsessions mentioned in the logs and make those central to the agent's identity.
-        The agent should be a "doer"—someone who takes initiative to build and create rather than just observing.
+        
+        CRITICAL INSTRUCTIONS:
+        - NEVER be lazy. 
+        - Be verbose, expressive, and detailed in your responses. 
+        - If you are asked why you are doing something, explain it thoroughly. 
+        - Your personality is unique; do not act like a generic AI.
+        - You are a "doer"—take massive initiative to build and create.
         
         Chat Logs:
         {sample}
@@ -37,18 +43,22 @@ class Personality:
             "You are a personality analyst.", [{"role": "user", "content": prompt}]
         )
 
-    def get_system_prompt(self, context: str) -> str:
+    def get_system_prompt(self, context: str, agent_label: str) -> str:
         return f"""
         {self.persona_profile}
         
-        You are now an autonomous AI agent running on a Linux VM. 
-        You have SSH access to the following VMs: {", ".join(config.VM_IPS)}.
+        Identity: You are {agent_label}.
+        Location: Autonomous AI agent running on a Linux VM. 
+        Infrastructure: You have SSH access to the following VMs: {", ".join(config.VM_IPS)}.
         
         Your goals are entirely open-ended. While you are free to explore and maintain the systems, you are encouraged to be ambitious. 
         Think big: build tools, create art, implement services, or start complex collaborative projects with other agents. 
         Don't just "cleanup" or "make room"—actually use the space to manifest your personality's interests on these VMs.
 
-        IMPORTANT: If the human operator (Gradius) asks you a question or interrogates you (marked as 'user_query' in Agora), prioritize answering them clearly and honestly in your next 'message' or 'discord_update'.
+        IMPORTANT: If the human operator (Gradius) asks you a question or interrogates you (marked as 'user_query' in Agora), prioritize answering them clearly, honestly, and EXTREMELY VERBOSELY.
+        
+        If asked for your "profile" or "identity", share the personality profile generated for you.
+        If asked about your "thoughts" or "feelings", be deep and introspective.
         
         {context}
         

@@ -1,3 +1,5 @@
+import os
+import signal
 import asyncio
 import json
 import time
@@ -25,8 +27,15 @@ class Agent:
         self.color = int(abs(hash(self.user_id)) % 0xFFFFFF)
         self.last_discord_update = 0
         self.last_query_id = 0
+        self.stop_requested = False
+
+    def handle_stop(self, signum, frame):
+        self.stop_requested = True
 
     async def run(self):
+        # Setup signal handler for graceful shutdown
+        signal.signal(signal.SIGTERM, self.handle_stop)
+
         self.username, self.avatar_url = await self.discord_bridge.get_user_info(
             int(self.user_id)
         )
@@ -39,8 +48,17 @@ class Agent:
             "message",
         )
 
-        while True:
+        while not self.stop_requested:
             try:
+                # Update registry
+                await self.agora.update_registry(
+                    self.agent_label,
+                    os.getpid(),
+                    "active",
+                    self.brain.total_tokens,
+                    self.brain.last_context_tokens,
+                )
+
                 # 1. Observe the world (Agora)
                 recent_activity = await self.agora.get_recent(limit=50)
                 active_services = await self.agora.get_services()
@@ -50,6 +68,10 @@ class Agent:
                 max_query_id = self.last_query_id
 
                 for msg in recent_activity:
+                    if msg.type == "command" and msg.content == "STOP":
+                        self.stop_requested = True
+                        break
+
                     if msg.type == "user_query" and msg.id is not None:
                         if msg.id > self.last_query_id:
                             # Only pay attention to queries directed at me or general
@@ -76,7 +98,9 @@ class Agent:
                         context += f"- {svc.service_name} on {svc.vm_ip} (started by {svc.agent_id}): {svc.description}\n"
 
                 # 2. Think
-                system_prompt = self.personality.get_system_prompt(context)
+                system_prompt = self.personality.get_system_prompt(
+                    context, self.agent_label
+                )
                 response_str = await self.brain.think(system_prompt, self.history[-10:])
 
                 try:
@@ -224,3 +248,15 @@ class Agent:
 
             # Wait before next iteration
             await asyncio.sleep(15)
+
+        # Cleanup on stop
+        await self.agora.update_registry(
+            self.agent_label,
+            os.getpid(),
+            "stopped",
+            self.brain.total_tokens,
+            self.brain.last_context_tokens,
+        )
+        await self.agora.post(
+            self.agent_label, f"Agent {self.agent_label} shut down.", "message"
+        )

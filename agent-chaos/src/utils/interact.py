@@ -1,89 +1,110 @@
 import asyncio
+import os
+import json
 from rich.console import Console
 from rich.prompt import Prompt
+from rich.panel import Panel
+from rich.syntax import Syntax
 from ..communication.agora import Agora
 
 console = Console()
 
 
-async def listen_for_responses(agora: Agora):
-    # Track the last ID we've displayed to the user
+async def listen_for_responses(agora: Agora, show_internal: bool = False):
     last_processed_id = 0
-
-    # Initialize pointer to current latest message in the whole system
-    # so we don't print the entire history on startup
     recent = await agora.get_recent(limit=1)
     if recent and recent[0].id is not None:
         last_processed_id = recent[0].id
 
     while True:
         await asyncio.sleep(2)
-        # Fetch new operator responses strictly after our last processed ID
-        new_messages = await agora.get_recent(
-            limit=50, msg_type="operator_response", after_id=last_processed_id
-        )
+        # Fetch NEW messages
+        messages = await agora.get_recent(limit=50, after_id=last_processed_id)
 
-        for msg in new_messages:
+        for msg in messages:
             if msg.id is not None and msg.id > last_processed_id:
-                console.print(
-                    f"\n[bold green]>>> Response from {msg.agent_id}:[/bold green]"
-                )
-                console.print(msg.content)
-                console.print("-" * 20)
-                last_processed_id = msg.id
+                if msg.type == "operator_response":
+                    console.print(
+                        f"\n[bold green]>>> Response from {msg.agent_id}:[/bold green]"
+                    )
+                    console.print(Panel(msg.content, border_style="green"))
+                elif show_internal and msg.type in ["thought", "feeling"]:
+                    color = "yellow" if msg.type == "thought" else "red"
+                    console.print(
+                        f"\n[dim {color}]({msg.agent_id} {msg.type}): {msg.content}[/]"
+                    )
 
-        # We also want to advance the pointer if there are NO operator responses but lots of other activity,
-        # otherwise our 'get_recent' might keep scanning from an old ID.
-        # But we only advance if we've checked for operator responses up to that point.
-        all_latest = await agora.get_recent(limit=1)
-        if all_latest and all_latest[0].id is not None:
-            latest_id = all_latest[0].id
-            if latest_id > last_processed_id:
-                # We haven't seen an operator_response, but we know the system has moved on to latest_id.
-                # However, if we just set last_processed_id = latest_id, we might skip a response
-                # that was written but not yet returned by the 'operator_response' filter.
-                # SQLite is consistent, so if we see ID X in the global log, it MUST be visible
-                # in the filtered log too.
-                last_processed_id = latest_id
+                last_processed_id = msg.id
 
 
 async def run_interrogator():
     agora = Agora()
     await agora.initialize()
 
-    console.print("[bold red]Agent Chaos - Interrogation Client[/bold red]")
-    console.print("[dim]Responses from agents will appear here automatically.[/dim]")
+    console.print("[bold red]Agent Chaos - Master Interrogation & Control[/bold red]")
 
-    # Start listener in background
-    asyncio.create_task(listen_for_responses(agora))
+    show_internal = (
+        Prompt.ask(
+            "Show internal thoughts/feelings in real-time?",
+            choices=["y", "n"],
+            default="n",
+        )
+        == "y"
+    )
+    asyncio.create_task(listen_for_responses(agora, show_internal))
 
     while True:
-        # Get active agents from recent messages
-        recent = await agora.get_recent(limit=100)
-        agents = sorted(
-            list(set([msg.agent_id for msg in recent if msg.type != "user_query"]))
-        )
+        # Get active agents from registry
+        registry = await agora.get_registry()
+        active_agents = [e.agent_id for e in registry if e.status == "active"]
 
-        if not agents:
-            console.print("[yellow]No active agents found. Waiting...[/yellow]")
-            await asyncio.sleep(5)
-            continue
-
-        options = ["all"] + agents + ["[Exit]"]
-        choice = Prompt.ask(
-            "Which agent would you like to interrogate?", choices=options, default="all"
-        )
+        options = [
+            "all",
+            "[Logs]",
+            "[Profiles]",
+            "[Stop All]",
+            "[Exit]",
+        ] + active_agents
+        choice = Prompt.ask("Target", choices=options, default="all")
 
         if choice == "[Exit]":
             break
+        elif choice == "[Stop All]":
+            await agora.post("system", "STOP", "command")
+            console.print("[bold red]Stop signal sent to all agents.[/bold red]")
+            continue
+        elif choice == "[Logs]":
+            log_files = [f for f in os.listdir("data/logs") if f.endswith(".json")]
+            if not log_files:
+                console.print("No logs found.")
+                continue
+            log_choice = Prompt.ask("Which user log?", choices=log_files)
+            with open(f"data/logs/{log_choice}", "r") as f:
+                data = json.load(f)
+                console.print(Syntax(json.dumps(data[:10], indent=2), "json"))
+                console.print(f"... showing first 10 of {len(data)} messages.")
+            continue
+        elif choice == "[Profiles]":
+            # We'll just ask the agents to share their profiles
+            await agora.post(
+                "all",
+                "Please state your full personality profile and current objectives.",
+                "user_query",
+            )
+            console.print("[cyan]Requested profiles from all agents.[/cyan]")
+            continue
 
-        question = Prompt.ask(f"Enter your message for [bold cyan]{choice}[/bold cyan]")
+        question = Prompt.ask(f"Message for [bold cyan]{choice}[/bold cyan]")
 
         if question:
-            await agora.post(choice, question, "user_query")
-            console.print(
-                f"[green]Message sent to {choice}. They will respond in their next thought cycle.[/green]"
-            )
+            # If 'all' is selected, we post a separate query for each agent to ensure individual responses
+            if choice == "all":
+                for agent in active_agents:
+                    await agora.post(agent, question, "user_query")
+            else:
+                await agora.post(choice, question, "user_query")
+
+            console.print(f"[green]Query sent. Waiting for response...[/green]")
             console.print("-" * 20)
 
 

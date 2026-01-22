@@ -25,6 +25,15 @@ class ServiceInfo(BaseModel):
     status: str = "running"
 
 
+class AgentRegistry(BaseModel):
+    agent_id: str
+    pid: int
+    status: str
+    total_tokens: int = 0
+    last_context_tokens: int = 0
+    last_heartbeat: Optional[str] = None
+
+
 class Agora:
     def __init__(self, db_path: str = "data/state/agora.sqlite"):
         self.db_path = db_path
@@ -60,7 +69,54 @@ class Agora:
                     status TEXT
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS registry (
+                    agent_id TEXT PRIMARY KEY,
+                    pid INTEGER,
+                    status TEXT,
+                    total_tokens INTEGER DEFAULT 0,
+                    last_context_tokens INTEGER DEFAULT 0,
+                    last_heartbeat DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             await db.commit()
+
+    async def update_registry(
+        self,
+        agent_id: str,
+        pid: int,
+        status: str,
+        total_tokens: int,
+        last_context_tokens: int,
+    ):
+        async with self._get_db() as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO registry (agent_id, pid, status, total_tokens, last_context_tokens, last_heartbeat)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+                (agent_id, pid, status, total_tokens, last_context_tokens),
+            )
+            await db.commit()
+
+    async def get_registry(self) -> List[AgentRegistry]:
+        registry = []
+        async with self._get_db() as db:
+            async with db.execute(
+                "SELECT agent_id, pid, status, total_tokens, last_context_tokens, last_heartbeat FROM registry"
+            ) as cursor:
+                async for row in cursor:
+                    registry.append(
+                        AgentRegistry(
+                            agent_id=row[0],
+                            pid=row[1],
+                            status=row[2],
+                            total_tokens=row[3],
+                            last_context_tokens=row[4],
+                            last_heartbeat=row[5],
+                        )
+                    )
+        return registry
 
     async def register_service(self, service: ServiceInfo):
         async with self._get_db() as db:
